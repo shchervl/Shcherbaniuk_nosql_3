@@ -682,10 +682,125 @@ LIMIT 15;
 
 ![Вузли з найбільшим ступенем](screenshots/part4_top_degree.png)
 
-**4.3–4.5** — найактивніші користувачі, ступені жанрових вузлів із часткою від усіх фільмів
-і концентрація оцінок (яка частка всіх ребер `RATED` припадає на 1% і 10% найпопулярніших
-фільмів). **4.6–4.7** — `PROFILE` однакових запитів для супервузла і звичайного вузла;
-їхні результати — у відповіді на питання 2.
+**4.3. Найактивніші користувачі** — супервузли з боку `User`.
+
+```cypher
+MATCH (u:User)
+WITH u, COUNT { (u)-[:RATED]->() } AS ratings
+RETURN u.userId AS userId, u.gender AS gender, u.ageGroup AS ageGroup,
+       u.occupation AS occupation, ratings
+ORDER BY ratings DESC
+LIMIT 10;
+```
+
+У загальному рейтингу 4.2 всі 15 місць займають фільми, тому користувачів шукаємо окремим
+запитом. Ступінь рахується за типом і напрямком ребра (`-[:RATED]->`): такий патерн без
+фільтрів за властивостями планувальник теж зводить до читання ступеня вузла, а не до перебору
+ребер. Стать, вік і професію виведено, щоб було видно, хто ці користувачі.
+
+```
+userId  gender  ageGroup  occupation              ratings
+4169    M       50-55     other                   2314
+1680    M       25-34     writer                  1850
+4277    M       35-44     self-employed           1743
+1941    M       35-44     technician/engineer     1595
+1181    M       35-44     executive/managerial    1521
+```
+
+**4.4. Ступені жанрових вузлів** — перевірка підказки із завдання про жанри.
+
+```cypher
+MATCH (m:Movie)
+WITH count(m) AS totalMovies
+MATCH (g:Genre)
+WITH g, totalMovies, COUNT { (g)<-[:HAS_GENRE]-() } AS movies
+RETURN g.name AS genre, movies, round(100.0 * movies / totalMovies, 1) AS pctOfMovies
+ORDER BY movies DESC;
+```
+
+Абсолютний ступінь жанру (сотні ребер) поруч із фільмами виглядає скромно, тому запит виводить
+ще й частку від усіх фільмів: саме вона показує, яку частину графа «чіпляє» один вузол.
+Загальна кількість фільмів рахується один раз у першому `WITH` і переноситься далі, а не
+обчислюється для кожного жанру.
+
+```
+genre       movies  pctOfMovies
+Drama         1603         41.3
+Comedy        1200         30.9
+Action         503         13.0
+Thriller       492         12.7
+Romance        471         12.1
+...
+Film-Noir       44          1.1
+```
+
+**4.5. Концентрація оцінок** — яка частка всіх ребер `RATED` припадає на 1% і 10%
+найпопулярніших фільмів.
+
+```cypher
+MATCH (m:Movie)
+WITH m, COUNT { (m)<-[:RATED]-() } AS degree
+ORDER BY degree DESC
+WITH collect(degree) AS degrees, sum(degree) AS total
+WITH degrees, total,
+     toInteger(ceil(size(degrees) * 0.01)) AS top1,
+     toInteger(ceil(size(degrees) * 0.10)) AS top10
+RETURN total AS ratings,
+       top1 AS moviesInTop1pct,
+       round(100.0 * reduce(s = 0, d IN degrees[..top1] | s + d) / total, 1) AS pctRatingsTop1pct,
+       top10 AS moviesInTop10pct,
+       round(100.0 * reduce(s = 0, d IN degrees[..top10] | s + d) / total, 1) AS pctRatingsTop10pct;
+```
+
+Топ-список показує окремі вузли, а цей запит — форму всього розподілу: це кілька винятків чи
+системна нерівномірність. Ступені сортуються за спаданням і збираються в один список;
+`degrees[..top1]` — зріз перших N елементів, `reduce` його підсумовує. Межі зрізу рахуються
+через `ceil`, щоб 1% від 3 883 фільмів дав 39, а не 38.
+
+```
+ratings  moviesInTop1pct  pctRatingsTop1pct  moviesInTop10pct  pctRatingsTop10pct
+1000209               39                9.1               389                45.7
+```
+
+**4.6. Той самий обхід для супервузла і для звичайного вузла.**
+
+```cypher
+// Супервузол: American Beauty (movieId = 2858), 3 428 оцінок.
+PROFILE
+MATCH (m:Movie {movieId: 2858})<-[:RATED]-(u:User)-[:RATED]->(other:Movie)
+RETURN m.title AS movie, count(*) AS paths, count(DISTINCT other) AS otherMovies;
+
+// Звичайний вузол: All the King's Men (movieId = 1942), 119 оцінок (близько до медіани).
+PROFILE
+MATCH (m:Movie {movieId: 1942})<-[:RATED]-(u:User)-[:RATED]->(other:Movie)
+RETURN m.title AS movie, count(*) AS paths, count(DISTINCT other) AS otherMovies;
+```
+
+Це типовий крок рекомендацій — «що ще оцінювали глядачі цього фільму». Два запити відрізняються
+лише значенням `movieId`, і обидва стартують з унікального індексу, тому різницю у вартості
+можна пояснити тільки ступенем стартового вузла. `PROFILE` виконує запит і показує фактичну
+кількість звернень до сховища (DbHits) для кожного оператора плану; `count(*)` рахує пройдені
+шляхи, `count(DISTINCT other)` — скільки різних фільмів досягнуто.
+
+```
+movie               paths   otherMovies  DbHits   Time
+American Beauty     714252         3659  1444953  228 ms
+All the King's Men   49927         3314   100449   24 ms
+```
+
+**4.7. Фільтр за властивістю ребра на супервузлі.**
+
+```cypher
+PROFILE
+MATCH (m:Movie {movieId: 2858})<-[r:RATED]-(u:User)
+WHERE r.rating = 1
+RETURN m.title AS movie, count(u) AS usersRatedOne;
+```
+
+Перевіряє, чи рятує супервузол вибірковий фільтр. Умова стоїть на властивості ребра, індексу
+на ній немає, тож базі доводиться розгорнути всі ребра вузла і прочитати `rating` у кожного.
+Результат: 83 користувачі і 6 945 DbHits. Вимірювання 4.6 і 4.7 розібрано у відповіді
+на питання 2.
 
 ### 1. Які вузли виявилися супервузлами? Скільки в них зв'язків?
 
