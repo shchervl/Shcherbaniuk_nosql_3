@@ -1,0 +1,17 @@
+# датасет MovieLens 1M: ліцензія забороняє поширювати дані,
+# тому ні .dat, ні згенеровані з них CSV не комітяться
+data/
+import/*.csv
+*.dat
+ml-1m.zip
+
+# оточення
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# IDE / ОС
+.idea/
+.vscode/
+.DS_Store

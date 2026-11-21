@@ -1,0 +1,6 @@
+[project]
+name = "shcherbaniuk-nosql-3"
+version = "0.1.0"
+description = "NoSQL HW3: knowledge graph for a movie recommender on Neo4j (MovieLens 1M)"
+requires-python = ">=3.12"
+dependencies = []
